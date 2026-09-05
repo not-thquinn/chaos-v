@@ -13,9 +13,7 @@ struct FixedProbeResult {
     int collisionsAtDetection = 0;
     Outcome outcome = Outcome::Unresolved;
     int collisionEvents = 0;
-    double periodStability = std::numeric_limits<double>::quiet_NaN();
     double expansionMargin = std::numeric_limits<double>::quiet_NaN();
-    double contractionMargin = std::numeric_limits<double>::quiet_NaN();
 };
 
 FixedProbeResult runFixed128Probe(

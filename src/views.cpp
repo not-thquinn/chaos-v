@@ -12,9 +12,13 @@
 #include <cmath>
 
 QColor periodColor(int period) {
+    return periodColor(double(period));
+}
+
+QColor periodColor(double period) {
     const double hue =
-        55. + 245. * (1. - std::exp(-.24 * std::max(0, period - 1)));
-    return QColor::fromHsv(int(hue) % 360, 210, 245);
+        55. + 245. * (1. - std::exp(-.24 * std::max(0., period - 1)));
+    return QColor::fromHsvF(hue / 360., 210. / 255., 245. / 255.);
 }
 
 QColor colorFor(const Result& result) {

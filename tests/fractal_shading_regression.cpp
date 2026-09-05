@@ -13,15 +13,13 @@ int main() {
     config.maxBalls = 12; config.analysisBalls = 50;
     config.collisionBudget = 1000; config.precisionBits = 64;
     config.leftDeg = 72.0703125; config.rightDeg = -70.6640625;
-    config.trackPeriodStability = true;
+    config.trackExpansionMargin = true;
 
     const Result result = classifyFractalPoint(config);
     if (result.outcome != Outcome::Periodic || result.period != 3 ||
-        !std::isfinite(result.periodStability) ||
         !std::isfinite(result.expansionMargin) ||
-        !std::isfinite(result.contractionMargin) ||
-        result.periodStability <= 0) {
-        std::cerr << "period or causal stability margin failed\n";
+        result.expansionMargin <= 0) {
+        std::cerr << "period or expansion margin failed\n";
         return 1;
     }
     if (shadeFractalResult(result, false, 1, 5) != colorFor(result)) {
@@ -30,7 +28,20 @@ int main() {
     }
     const QColor shaded = shadeFractalResult(result, true, .7, 5);
     if (!shaded.isValid() || shaded == colorFor(result)) {
-        std::cerr << "exit shading produced an invalid color\n";
+        std::cerr << "expansion shading produced an invalid color\n";
+        return 1;
+    }
+    Result boundary = result;
+    boundary.expansionMargin = 0;
+    if (shadeFractalResult(boundary, true, 1, 5) !=
+        periodColor(result.period + 1)) {
+        std::cerr << "zero margin did not reach the next period color\n";
+        return 1;
+    }
+    boundary.expansionMargin = 5;
+    if (shadeFractalResult(boundary, true, 1, 5) !=
+        periodColor(double(result.period) + .5)) {
+        std::cerr << "scale did not produce a half-period color shift\n";
         return 1;
     }
     return 0;

@@ -80,7 +80,7 @@ struct Config {
     int analysisBalls = 96;
     int collisionBudget = 1000;
     int precisionBits = 160;
-    bool trackPeriodStability = false;
+    bool trackExpansionMargin = false;
 };
 
 enum class Outcome {
@@ -96,9 +96,7 @@ struct Result {
     int ballsSpawnedAtDetection = 0;
     int collisionsAtDetection = 0;
     bool periodFromRenderedPixel = false;
-    double periodStability = std::numeric_limits<double>::quiet_NaN();
     double expansionMargin = std::numeric_limits<double>::quiet_NaN();
-    double contractionMargin = std::numeric_limits<double>::quiet_NaN();
     Outcome outcome = Outcome::Unresolved;
     int collisionEvents = 0;
     double radius = 8;

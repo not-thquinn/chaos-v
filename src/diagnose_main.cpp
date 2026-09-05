@@ -64,7 +64,7 @@ int diagnose(const QString& path, int precisionOverride) {
     }
 
     Config config = configFromJson(document.object());
-    config.trackPeriodStability = true;
+    config.trackExpansionMargin = true;
     if (precisionOverride > 0)
         config.precisionBits = precisionOverride;
     const Result result = Simulator(config).run(false);
@@ -73,9 +73,7 @@ int diagnose(const QString& path, int precisionOverride) {
               << " spawnedAtDetection=" << result.ballsSpawnedAtDetection
               << " collisionsAtDetection=" << result.collisionsAtDetection
               << " collisions=" << result.collisionEvents
-              << " stability=" << result.periodStability
               << " expansion=" << result.expansionMargin
-              << " contraction=" << result.contractionMargin
               << " exits=" << result.exits.size() << '\n';
     std::cout << std::setprecision(40);
     for (size_t i = 0; i < result.exits.size(); ++i) {

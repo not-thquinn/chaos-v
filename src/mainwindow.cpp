@@ -196,18 +196,18 @@ void MainWindow::buildUi() {
     analysisBalls_ = integerSpin(96, 4, 100000);
     collisionBudget_ = integerSpin(1000, 1, 1000000);
     precisionBits_ = integerSpin(160, 32, 2048);
-    certificateShading_ = new QCheckBox("Causal period-stability shading");
-    certificateShading_->setChecked(true);
-    certificateShadingStrength_ = doubleSpin(.7, 0, 1, 3);
-    certificateShadingScale_ = doubleSpin(5, .000001, 1000, 6);
-    certificateShadingStrength_->setToolTip(
-        "How strongly period fragility changes the period-color lightness.");
-    certificateShadingScale_->setToolTip(
-        "Normalized hit/miss margin mapped to the middle of the tonal range.");
-    connect(certificateShading_, &QCheckBox::toggled,
-            certificateShadingStrength_, &QWidget::setEnabled);
-    connect(certificateShading_, &QCheckBox::toggled,
-            certificateShadingScale_, &QWidget::setEnabled);
+    expansionMarginShading_ = new QCheckBox("Expansion margin shading");
+    expansionMarginShading_->setChecked(true);
+    expansionShadingStrength_ = doubleSpin(.7, 0, 1, 3);
+    expansionMarginScale_ = doubleSpin(5, .000001, 1000, 6);
+    expansionShadingStrength_->setToolTip(
+        "Maximum fractional-period color shift; 1 reaches the next period color.");
+    expansionMarginScale_->setToolTip(
+        "Normalized near-miss margin at which the color shift is half strength.");
+    connect(expansionMarginShading_, &QCheckBox::toggled,
+            expansionShadingStrength_, &QWidget::setEnabled);
+    connect(expansionMarginShading_, &QCheckBox::toggled,
+            expansionMarginScale_, &QWidget::setEnabled);
 
     form->addRow("Left angle", leftAngle_);
     form->addRow("Right angle", rightAngle_);
@@ -232,9 +232,9 @@ void MainWindow::buildUi() {
         "Fractal renders at 32–64 bits use the native collision-topology "
         "engine; higher settings use fixed or variable MPFR.");
     form->addRow("Precision (bits)", precisionBits_);
-    form->addRow(certificateShading_);
-    form->addRow("Stability shading strength", certificateShadingStrength_);
-    form->addRow("Period-margin scale", certificateShadingScale_);
+    form->addRow(expansionMarginShading_);
+    form->addRow("Expansion shading strength", expansionShadingStrength_);
+    form->addRow("Expansion-margin scale", expansionMarginScale_);
 
     renderButton_ = new QPushButton("Generate fractal");
     sweepButton_ = new QPushButton("Generate parameter sweep…");
@@ -282,8 +282,8 @@ void MainWindow::buildUi() {
         segmentLength_, spawnInterval_, spawnY_, cutoff_, xmin_, xmax_, ymin_, ymax_,
         fractalWidth_, fractalHeight_, maxBalls_, analysisBalls_,
         collisionBudget_, precisionBits_, renderButton_, sweepButton_,
-        zoomButton_, pasteButton_, certificateShading_,
-        certificateShadingStrength_, certificateShadingScale_
+        zoomButton_, pasteButton_, expansionMarginShading_,
+        expansionShadingStrength_, expansionMarginScale_
     };
 
     connect(parameterView_, &ParameterView::chosen,
@@ -640,9 +640,9 @@ QJsonObject MainWindow::renderSettingsJson() const {
     object["ballsToAnalyze"] = analysisBalls_->value();
     object["collisionBudget"] = collisionBudget_->value();
     object["precisionBits"] = precisionBits_->value();
-    object["periodStabilityShading"] = certificateShading_->isChecked();
-    object["periodShadingStrength"] = certificateShadingStrength_->value();
-    object["periodMarginScale"] = certificateShadingScale_->value();
+    object["expansionMarginShading"] = expansionMarginShading_->isChecked();
+    object["expansionShadingStrength"] = expansionShadingStrength_->value();
+    object["expansionMarginScale"] = expansionMarginScale_->value();
     return object;
 }
 
@@ -1042,10 +1042,10 @@ void MainWindow::startFractalRender(
     const auto sampledCount = std::make_shared<std::atomic_int>(0);
     const auto sampledNanoseconds =
         std::make_shared<std::atomic<long long>>(0);
-    const bool shadePeriodStability = certificateShading_->isChecked();
-    const double shadingStrength = certificateShadingStrength_->value();
-    const double shadingScale = certificateShadingScale_->value();
-    base.trackPeriodStability = shadePeriodStability;
+    const bool shadeExpansionMargin = expansionMarginShading_->isChecked();
+    const double shadingStrength = expansionShadingStrength_->value();
+    const double shadingScale = expansionMarginScale_->value();
+    base.trackExpansionMargin = shadeExpansionMargin;
 
     for (const RenderTileJob job : schedule) {
         const int tileX = job.index % columns;
@@ -1081,8 +1081,8 @@ void MainWindow::startFractalRender(
                                 classification.period;
                         image.setPixel(
                             x, y, shadeFractalResult(
-                                classification, shadePeriodStability, shadingStrength,
-                                shadingScale).rgb());
+                                classification, shadeExpansionMargin,
+                                shadingStrength, shadingScale).rgb());
                     }
                 }
 
@@ -1525,12 +1525,16 @@ void MainWindow::restoreSettings() {
     restoreInteger("analysis", analysisBalls_);
     restoreInteger("budget", collisionBudget_);
     restoreInteger("bits", precisionBits_);
-    certificateShading_->setChecked(
-        settings_.value("certificateShading", true).toBool());
-    certificateShadingStrength_->setValue(
-        settings_.value("certificateShadingStrength", .7).toDouble());
-    certificateShadingScale_->setValue(
-        settings_.value("certificateShadingScale", 5.).toDouble());
+    const bool legacyShading =
+        settings_.value("certificateShading", true).toBool();
+    expansionMarginShading_->setChecked(
+        settings_.value("expansionMarginShading", legacyShading).toBool());
+    expansionShadingStrength_->setValue(
+        settings_.value("expansionShadingStrength",
+                        settings_.value("certificateShadingStrength", .7)).toDouble());
+    expansionMarginScale_->setValue(
+        settings_.value("expansionMarginScale",
+                        settings_.value("certificateShadingScale", 5.)).toDouble());
 }
 
 void MainWindow::saveSettings() {
@@ -1564,11 +1568,13 @@ void MainWindow::saveSettings() {
     saveInteger("analysis", analysisBalls_);
     saveInteger("budget", collisionBudget_);
     saveInteger("bits", precisionBits_);
-    settings_.setValue("certificateShading", certificateShading_->isChecked());
-    settings_.setValue("certificateShadingStrength",
-                       certificateShadingStrength_->value());
-    settings_.setValue("certificateShadingScale",
-                       certificateShadingScale_->value());
+    settings_.setValue("expansionMarginShading",
+                       expansionMarginShading_->isChecked());
+    settings_.setValue("expansionShadingStrength",
+                       expansionShadingStrength_->value());
+    settings_.setValue("expansionMarginScale",
+                       expansionMarginScale_->value());
+    settings_.remove("contractionMarginShading");
 
     const QPointF camera = simulationView_->cameraPosition();
     settings_.setValue("cameraX", camera.x());

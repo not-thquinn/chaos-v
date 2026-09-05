@@ -13,8 +13,6 @@ FixedProbeResult CHAOSV_FIXED_PROBE_FUNCTION(
         result.collisionsAtDetection,
         result.outcome,
         result.collisionEvents,
-        result.periodStability,
-        result.expansionMargin,
-        result.contractionMargin
+        result.expansionMargin
     };
 }

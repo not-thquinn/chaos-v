@@ -9,8 +9,6 @@ NativeProbeResult runNativeProbe(
         result.collisionsAtDetection,
         result.outcome,
         result.collisionEvents,
-        result.periodStability,
-        result.expansionMargin,
-        result.contractionMargin
+        result.expansionMargin
     };
 }

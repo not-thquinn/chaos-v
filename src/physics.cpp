@@ -243,7 +243,6 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
                               : PairKey{second, first};
     };
     std::map<PairKey, double> missMargins;
-    std::map<PairKey, double> collisionMargins;
     struct PendingMiss {
         Real time;
         int first = 0;
@@ -336,7 +335,7 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
             if (const auto time = ballHit(ball, other)) {
                 push({Event::Pair, now + *time, ball.id, other.id,
                       ball.generation, other.generation, 0});
-            } else if (config_.trackPeriodStability) {
+            } else if (config_.trackExpansionMargin) {
                 const V2 displacement = ball.p - other.p;
                 const V2 relativeVelocity = ball.v - other.v;
                 const Real a = normSquared(relativeVelocity);
@@ -366,8 +365,8 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
         }
     };
 
-    const auto computePeriodStability = [&](int period) {
-        if (!config_.trackPeriodStability || period <= 0)
+    const auto computeExpansionMargin = [&](int period) {
+        if (!config_.trackExpansionMargin || period <= 0)
             return;
 
         long double reciprocalSum = 0;
@@ -383,61 +382,6 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
         if (expansionCount > 0)
             result.expansionMargin =
                 double(expansionCount / reciprocalSum);
-
-        if (period == 1) {
-            result.contractionMargin =
-                std::numeric_limits<double>::infinity();
-        } else {
-            struct WeightedEdge { int a; int b; double weight; };
-            std::vector<WeightedEdge> edges;
-            for (const auto& [key, margin] : collisionMargins)
-                if (key.first < period && key.second < period)
-                    edges.push_back({key.first, key.second, margin});
-            std::sort(edges.begin(), edges.end(),
-                      [](const auto& first, const auto& second) {
-                          return first.weight > second.weight;
-                      });
-            std::vector<int> parent(period);
-            std::vector<int> size(period, 1);
-            for (int i = 0; i < period; ++i)
-                parent[i] = i;
-            const auto root = [&](int node) {
-                while (parent[node] != node) {
-                    parent[node] = parent[parent[node]];
-                    node = parent[node];
-                }
-                return node;
-            };
-            int selected = 0;
-            double bottleneck = std::numeric_limits<double>::infinity();
-            for (const auto& edge : edges) {
-                int firstRoot = root(edge.a);
-                int secondRoot = root(edge.b);
-                if (firstRoot == secondRoot)
-                    continue;
-                if (size[firstRoot] < size[secondRoot])
-                    std::swap(firstRoot, secondRoot);
-                parent[secondRoot] = firstRoot;
-                size[firstRoot] += size[secondRoot];
-                bottleneck = std::min(bottleneck, edge.weight);
-                if (++selected == period - 1)
-                    break;
-            }
-            if (selected == period - 1)
-                result.contractionMargin = bottleneck;
-        }
-
-        const bool hasExpansion = std::isfinite(result.expansionMargin);
-        const bool hasContraction = std::isfinite(result.contractionMargin);
-        if (hasExpansion && hasContraction) {
-            const double first = std::max(result.expansionMargin, 1e-30);
-            const double second = std::max(result.contractionMargin, 1e-30);
-            result.periodStability = 2 / (1 / first + 1 / second);
-        } else if (hasExpansion) {
-            result.periodStability = result.expansionMargin;
-        } else if (hasContraction) {
-            result.periodStability = result.contractionMargin;
-        }
     };
 
     push({Event::Spawn, spawnInterval_ * spawned, 0, 0, 0, 0, 0});
@@ -477,7 +421,7 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
             copyExits(result, rawExits);
             result.period = *foundPeriod;
             result.outcome = Outcome::Periodic;
-            computePeriodStability(*foundPeriod);
+            computeExpansionMargin(*foundPeriod);
             return result;
         }
 
@@ -514,7 +458,7 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
             const auto iterator = findBall(event.a);
             const auto& ball = *iterator;
             const int id = ball.id;
-            if (config_.trackPeriodStability) {
+            if (config_.trackExpansionMargin) {
                 const Real normalization = 4 * radius_ * radius_;
                 for (const auto& other : balls) {
                     if (other.id == id)
@@ -548,7 +492,7 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
                         copyExits(result, rawExits);
                         result.period = *foundPeriod;
                         result.outcome = Outcome::Periodic;
-                        computePeriodStability(*foundPeriod);
+                        computeExpansionMargin(*foundPeriod);
                         return result;
                     }
                     const Real cycle = spawnInterval_ * *period;
@@ -560,32 +504,11 @@ Result Simulator::run(bool captureFrames, const std::atomic_bool* cancel) {
         case Event::Pair: {
             auto first = findBall(event.a);
             auto second = findBall(event.b);
-            double collisionMargin = 0;
-            if (config_.trackPeriodStability) {
-                const V2 displacement = first->p - second->p;
-                const V2 relativeVelocity = first->v - second->v;
-                const Real a = normSquared(relativeVelocity);
-                if (a > 0) {
-                    const Real b = dot(relativeVelocity, displacement);
-                    const Real c = normSquared(displacement) -
-                                   4 * radius_ * radius_;
-                    Real discriminant = b * b - a * c;
-                    if (discriminant < 0)
-                        discriminant = 0;
-                    collisionMargin = toDouble(
-                        discriminant / (a * 4 * radius_ * radius_));
-                }
-            }
             if (resolvePair(*first, *second)) {
                 ++result.collisionEvents;
                 partnerOffsets[first->id].push_back(second->id - first->id);
                 partnerOffsets[second->id].push_back(first->id - second->id);
                 periodTracker.collide(first->id, second->id);
-                if (config_.trackPeriodStability) {
-                    const PairKey key = pairKey(first->id, second->id);
-                    collisionMargins[key] = std::max(
-                        collisionMargins[key], collisionMargin);
-                }
             }
             ++first->generation;
             ++second->generation;

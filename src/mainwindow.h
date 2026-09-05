@@ -129,9 +129,9 @@ private:
     QSpinBox* analysisBalls_ = nullptr;
     QSpinBox* collisionBudget_ = nullptr;
     QSpinBox* precisionBits_ = nullptr;
-    QCheckBox* certificateShading_ = nullptr;
-    QDoubleSpinBox* certificateShadingStrength_ = nullptr;
-    QDoubleSpinBox* certificateShadingScale_ = nullptr;
+    QCheckBox* expansionMarginShading_ = nullptr;
+    QDoubleSpinBox* expansionShadingStrength_ = nullptr;
+    QDoubleSpinBox* expansionMarginScale_ = nullptr;
 
     std::shared_ptr<std::atomic_bool> cancel_;
     std::shared_ptr<std::atomic_bool> previewCancel_;

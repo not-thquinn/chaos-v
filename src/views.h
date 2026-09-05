@@ -27,6 +27,7 @@ class QToolButton;
 class QWheelEvent;
 
 QColor periodColor(int period);
+QColor periodColor(double period);
 QColor colorFor(const Result& result);
 
 class ParameterView : public QWidget {

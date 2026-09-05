@@ -15,9 +15,7 @@ Result fixedResult(const FixedProbeResult& probe) {
     result.collisionsAtDetection = probe.collisionsAtDetection;
     result.outcome = probe.outcome;
     result.collisionEvents = probe.collisionEvents;
-    result.periodStability = probe.periodStability;
     result.expansionMargin = probe.expansionMargin;
-    result.contractionMargin = probe.contractionMargin;
     return result;
 }
 
@@ -57,8 +55,6 @@ Result classifyFractalPoint(Config config, const std::atomic_bool* cancel) {
     result.collisionsAtDetection = probe.collisionsAtDetection;
     result.outcome = probe.outcome;
     result.collisionEvents = probe.collisionEvents;
-    result.periodStability = probe.periodStability;
     result.expansionMargin = probe.expansionMargin;
-    result.contractionMargin = probe.contractionMargin;
     return result;
 }

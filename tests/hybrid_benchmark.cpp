@@ -31,7 +31,7 @@ int main(int argc, char** argv) {
     base.analysisBalls = 50;
     base.collisionBudget = 1000;
     base.precisionBits = precisionBits;
-    base.trackPeriodStability = argc > 7 ? std::atoi(argv[7]) != 0 : false;
+    base.trackExpansionMargin = argc > 7 ? std::atoi(argv[7]) != 0 : false;
 
     int differences = 0;
     int periodic = 0;
@@ -54,8 +54,8 @@ int main(int argc, char** argv) {
             hybridResults.push_back({
                 hybridOutcome, hybridPeriod,
                 false});
-            if (std::isfinite(classified.periodStability))
-                stabilityValues.push_back(classified.periodStability);
+            if (std::isfinite(classified.expansionMargin))
+                stabilityValues.push_back(classified.expansionMargin);
         }
     }
     const double hybridSeconds = std::chrono::duration<double>(

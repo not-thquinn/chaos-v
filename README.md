@@ -14,8 +14,8 @@ An event-driven desktop explorer for a two-segment, falling-ball chaotic system.
   isolation of the resulting quartic, rather than unstable Ferrari radicals.
 - Renders the angle parameter plane in CPU worker threads, progressively by
   tiles, and exports the current image as PNG.
-- Optionally shades each period by a causal stability certificate derived from
-  essential collisions and relevant cross-boundary near misses.
+- Optionally shifts each period toward the next period color according to a
+  causal expansion margin derived from relevant cross-boundary near misses.
 - Lets a click in the parameter plane run and animate the corresponding
   simulation.
 - Shift-clicks rendered pixels at their exact source coordinates and can copy
