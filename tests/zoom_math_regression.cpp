@@ -65,12 +65,24 @@ int main() {
         passed = false;
     }
 
+    constexpr double circularRampEnd =
+        (3.14159265358979323846 / 4) /
+        (2 + 3.14159265358979323846 / 2);
     if (!near(zoomCenterProgress(0, 4, 1), 0) ||
-        !near(zoomCenterProgress(1, 4, 1), 1. / 6) ||
+        !near(zoomCenterProgress(1, 4, 1), circularRampEnd) ||
         !near(zoomCenterProgress(2, 4, 1), .5) ||
         !near(zoomCenterProgress(4, 4, 1), 1) ||
         !near(zoomCenterProgress(8, 4, 1), 1)) {
         std::cerr << "zoom center damping is incorrect\n";
+        passed = false;
+    }
+    constexpr double h = 1e-5;
+    const double leftVelocity =
+        (zoomCenterProgress(1, 4, 1) - zoomCenterProgress(1 - h, 4, 1)) / h;
+    const double rightVelocity =
+        (zoomCenterProgress(1 + h, 4, 1) - zoomCenterProgress(1, 4, 1)) / h;
+    if (std::abs(leftVelocity - rightVelocity) > 1e-6) {
+        std::cerr << "pan velocity is discontinuous at the damping boundary\n";
         passed = false;
     }
 

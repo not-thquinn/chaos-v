@@ -1,15 +1,22 @@
 #include "views.h"
 
+#include <QCheckBox>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QResizeEvent>
+#include <QSignalBlocker>
 #include <QDoubleSpinBox>
+#include <QFile>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QSlider>
+#include <QSpinBox>
 #include <QToolButton>
 #include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
 QColor periodColor(int period) {
     return periodColor(double(period));
@@ -21,20 +28,96 @@ QColor periodColor(double period) {
     return QColor::fromHsvF(hue / 360., 210. / 255., 245. / 255.);
 }
 
+namespace {
+QColor ultraFractalGradient(double position) {
+    struct Stop {
+        double position;
+        QColor color;
+    };
+    static const std::array<Stop, 5> stops{{
+        {0., QColor(0, 7, 100)},
+        {.16, QColor(32, 107, 203)},
+        {.42, QColor(237, 255, 255)},
+        {.6425, QColor(255, 170, 0)},
+        {.8575, QColor(0, 0, 0)},
+    }};
+    position = std::clamp(position, 0., 1.);
+    if (position >= stops.back().position)
+        return stops.back().color;
+    int first = 0;
+    while (first + 1 < int(stops.size()) &&
+           position > stops[first + 1].position)
+        ++first;
+    double amount = (position - stops[first].position) /
+                    (stops[first + 1].position - stops[first].position);
+    amount = amount * amount * (3 - 2 * amount);
+    const auto channel = [&](int (QColor::*get)() const) {
+        return int(std::lround(
+            (1 - amount) * (stops[first].color.*get)() +
+            amount * (stops[first + 1].color.*get)()));
+    };
+    return QColor(channel(&QColor::red), channel(&QColor::green),
+                  channel(&QColor::blue));
+}
+
+double palettePosition(double period, const FractalPaletteSettings& settings) {
+    const double span = std::max(1, settings.maximumPeriod - 1);
+    const double linear = std::clamp((period - 1) / span, 0., 1.);
+    // Positive slider values devote more of the gradient to low periods,
+    // matching the useful behavior of Chaos V's original palette.
+    const double exponent = std::pow(4., -std::clamp(settings.curve, -1., 1.));
+    return std::pow(linear, exponent);
+}
+
+bool samePalette(
+    const FractalPaletteSettings& first,
+    const FractalPaletteSettings& second) {
+    return first.ultraFractal == second.ultraFractal &&
+           std::abs(first.curve - second.curve) <= 1e-12 &&
+           first.maximumPeriod == second.maximumPeriod;
+}
+}
+
+QColor periodColor(double period, const FractalPaletteSettings& settings) {
+    return settings.ultraFractal
+               ? ultraFractalGradient(palettePosition(period, settings))
+               : periodColor(period);
+}
+
 QColor colorFor(const Result& result) {
+    return colorFor(result, {});
+}
+
+QColor colorFor(
+    const Result& result, const FractalPaletteSettings& settings) {
     switch (result.outcome) {
     case Outcome::Periodic:
-        return periodColor(result.period);
+        return periodColor(result.period, settings);
     case Outcome::CollisionBudget:
-        return QColor(175, 35, 45);
+        return settings.ultraFractal ? QColor(0, 0, 0)
+                                    : QColor(175, 35, 45);
     case Outcome::SpawnBlocked:
-        return QColor(255, 140, 55);
+        return settings.ultraFractal ? QColor(190, 35, 45)
+                                    : QColor(255, 140, 55);
     case Outcome::LiveCapacity:
-        return QColor(245, 90, 90);
+        return settings.ultraFractal ? QColor(190, 35, 45)
+                                    : QColor(245, 90, 90);
     case Outcome::Unresolved:
-        return QColor(20, 20, 28);
+        return settings.ultraFractal ? QColor(190, 35, 45)
+                                    : QColor(20, 20, 28);
     }
     return QColor(20, 20, 28);
+}
+
+QColor colorForFractalValue(
+    float value, const FractalPaletteSettings& settings) {
+    if (value > 0)
+        return periodColor(value, settings);
+    if (value == 0)
+        return QColor(15, 15, 20);
+    Result result;
+    result.outcome = Outcome(std::clamp(-int(value) - 1, 0, 4));
+    return colorFor(result, settings);
 }
 
 ParameterView::ParameterView(QWidget* parent) : QWidget(parent) {
@@ -59,19 +142,55 @@ ParameterView::ParameterView(QWidget* parent) : QWidget(parent) {
             preciseString(layer.xmin), preciseString(layer.xmax),
             preciseString(layer.ymin), preciseString(layer.ymax));
     });
+
+    ultraPalette_ = new QCheckBox("Ultra Fractal", this);
+    ultraPalette_->setToolTip("Use the classic Ultra Fractal Default gradient");
+    paletteControls_ = new QWidget(this);
+    auto* paletteLayout = new QHBoxLayout(paletteControls_);
+    paletteLayout->setContentsMargins(0, 0, 0, 0);
+    paletteLayout->setSpacing(4);
+    paletteCurve_ = new QSlider(Qt::Horizontal, paletteControls_);
+    paletteCurve_->setRange(-100, 100);
+    paletteCurve_->setValue(50);
+    paletteCurve_->setFixedWidth(110);
+    paletteCurve_->setToolTip(
+        "Period mapping: sublinear on the left, linear in the middle, "
+        "superlinear on the right");
+    paletteMaximum_ = new QSpinBox(paletteControls_);
+    paletteMaximum_->setRange(2, 1000000);
+    paletteMaximum_->setValue(50);
+    paletteMaximum_->setPrefix("Max ");
+    paletteMaximum_->setFixedWidth(164);
+    paletteLayout->addWidget(paletteCurve_);
+    paletteLayout->addWidget(paletteMaximum_);
+    paletteControls_->adjustSize();
+    paletteControls_->hide();
+
+    const auto paletteChanged = [this] {
+        paletteControls_->setVisible(ultraPalette_->isChecked());
+        recolorLayers();
+        update();
+        emit paletteSettingsChanged();
+    };
+    connect(ultraPalette_, &QCheckBox::toggled, this, paletteChanged);
+    connect(paletteCurve_, &QSlider::valueChanged, this, paletteChanged);
+    connect(paletteMaximum_, qOverload<int>(&QSpinBox::valueChanged),
+            this, paletteChanged);
 }
 
 void ParameterView::setLayerKey(const QString& key) {
     if (activeKey_ == key)
         return;
     activeKey_ = key;
+    recolorLayers();
     update();
 }
 
 bool ParameterView::beginLayer(
     int width, int height, const PreciseDecimal& left,
     const PreciseDecimal& right, const PreciseDecimal& bottom,
-    const PreciseDecimal& top, const Config& renderConfig) {
+    const PreciseDecimal& top, const Config& renderConfig,
+    const FractalPaletteSettings& palette) {
     PreciseDecimal area = abs((right - left) * (top - bottom));
     if (area == 0)
         return false;
@@ -81,7 +200,9 @@ bool ParameterView::beginLayer(
         left, right, bottom, top, detail, renderConfig.precisionBits,
         renderConfig.analysisBalls, renderConfig.maxBalls,
         renderConfig.collisionBudget,
-        std::make_shared<std::vector<int>>(size_t(width) * height)
+        std::make_shared<std::vector<int>>(size_t(width) * height),
+        std::make_shared<std::vector<float>>(size_t(width) * height),
+        {}, {}, palette, true
     };
     if (layer.image.isNull())
         return false;
@@ -95,7 +216,10 @@ void ParameterView::addStoredLayer(
     const QString& key, QImage image, const QString& leftText,
     const QString& rightText, const QString& bottomText,
     const QString& topText, int precisionBits, int analysisBalls,
-    int maxBalls, int collisionBudget, std::vector<int> periods) {
+    int maxBalls, int collisionBudget, std::vector<int> periods,
+    std::vector<float> colorValues, bool recolor,
+    const QString& periodsPath, const QString& colorValuesPath,
+    const FractalPaletteSettings& savedPalette, bool paletteKnown) {
     if (image.isNull())
         return;
     try {
@@ -110,10 +234,30 @@ void ParameterView::addStoredLayer(
             PreciseDecimal(image.width()) * image.height() / area);
         layerSets_[key].push_back(
             {std::move(image), left, right, bottom, top, detail,
-             precisionBits, analysisBalls, maxBalls, collisionBudget, {}});
+             precisionBits, analysisBalls, maxBalls, collisionBudget, {}, {}});
         auto& stored = layerSets_[key].back();
+        stored.periodsPath = periodsPath;
+        stored.colorValuesPath = colorValuesPath;
+        stored.appliedPalette = savedPalette;
+        stored.paletteKnown = paletteKnown;
         if (periods.size() == size_t(stored.image.width()) * stored.image.height())
             stored.periods = std::make_shared<std::vector<int>>(std::move(periods));
+        if (colorValues.size() ==
+            size_t(stored.image.width()) * stored.image.height()) {
+            stored.colorValues =
+                std::make_shared<std::vector<float>>(std::move(colorValues));
+        }
+        if (recolor && loadColorValues(stored)) {
+            for (int y = 0; y < stored.image.height(); ++y)
+                for (int x = 0; x < stored.image.width(); ++x)
+                    stored.image.setPixelColor(
+                        x, y, colorForFractalValue(
+                                  (*stored.colorValues)[size_t(y) *
+                                      stored.image.width() + x],
+                                  paletteSettings()));
+            stored.appliedPalette = paletteSettings();
+            stored.paletteKnown = true;
+        }
     } catch (...) {
         return;
     }
@@ -142,6 +286,8 @@ void ParameterView::replaceLatestLayer(
         return;
     auto& layer = layers->back();
     layer.image = std::move(image);
+    layer.periods.reset();
+    layer.colorValues.reset();
     layer.xmin = axes[0]; layer.xmax = axes[1];
     layer.ymin = axes[2]; layer.ymax = axes[3];
     const PreciseDecimal area = abs((axes[1] - axes[0]) * (axes[3] - axes[2]));
@@ -181,7 +327,8 @@ std::array<PreciseDecimal, 4> ParameterView::axes() const {
 }
 
 void ParameterView::tile(
-    int x, int y, const QImage& image, const std::vector<int>& periods) {
+    int x, int y, const QImage& image, const std::vector<int>& periods,
+    const std::vector<float>& colorValues) {
     auto* layers = activeLayers();
     if (!layers || layers->empty())
         return;
@@ -196,6 +343,18 @@ void ParameterView::tile(
             std::copy_n(periods.begin() + size_t(row) * image.width(),
                         image.width(),
                         layer.periods->begin() + size_t(y + row) * layer.image.width() + x);
+    }
+    if (!colorValues.empty() &&
+        colorValues.size() == size_t(image.width()) * image.height() &&
+        layer.colorValues &&
+        layer.colorValues->size() ==
+            size_t(layer.image.width()) * layer.image.height()) {
+        for (int row = 0; row < image.height(); ++row)
+            std::copy_n(
+                colorValues.begin() + size_t(row) * image.width(),
+                image.width(),
+                layer.colorValues->begin() +
+                    size_t(y + row) * layer.image.width() + x);
     }
     update();
 }
@@ -212,6 +371,89 @@ QImage ParameterView::fractal() const {
 
 bool ParameterView::hasSelection() const {
     return selection_.has_value();
+}
+
+FractalPaletteSettings ParameterView::paletteSettings() const {
+    return {ultraPalette_->isChecked(), paletteCurve_->value() / 100.,
+            paletteMaximum_->value()};
+}
+
+void ParameterView::setPaletteSettings(
+    const FractalPaletteSettings& settings) {
+    const QSignalBlocker first(ultraPalette_);
+    const QSignalBlocker second(paletteCurve_);
+    const QSignalBlocker third(paletteMaximum_);
+    ultraPalette_->setChecked(settings.ultraFractal);
+    paletteCurve_->setValue(int(std::lround(
+        std::clamp(settings.curve, -1., 1.) * 100)));
+    paletteMaximum_->setValue(settings.maximumPeriod);
+    paletteControls_->setVisible(settings.ultraFractal);
+    recolorLayers();
+    update();
+}
+
+void ParameterView::setPaletteControlsEnabled(bool enabled) {
+    ultraPalette_->setEnabled(enabled);
+    paletteControls_->setEnabled(enabled);
+}
+
+void ParameterView::recolorLayers() {
+    const auto settings = paletteSettings();
+    auto* layers = activeLayers();
+    if (!layers)
+        return;
+    for (auto& layer : *layers) {
+        if (layer.paletteKnown && samePalette(layer.appliedPalette, settings))
+            continue;
+        if (!loadColorValues(layer) || !layer.colorValues ||
+            layer.colorValues->size() !=
+                size_t(layer.image.width()) * layer.image.height())
+            continue;
+        for (int y = 0; y < layer.image.height(); ++y)
+            for (int x = 0; x < layer.image.width(); ++x)
+                layer.image.setPixelColor(
+                    x, y, colorForFractalValue(
+                              (*layer.colorValues)[size_t(y) *
+                                  layer.image.width() + x], settings));
+        layer.appliedPalette = settings;
+        layer.paletteKnown = true;
+    }
+}
+
+bool ParameterView::loadPeriods(Layer& layer) {
+    if (layer.periods)
+        return true;
+    if (layer.periodsPath.isEmpty())
+        return false;
+    QFile file(layer.periodsPath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray raw = qUncompress(file.readAll());
+    const size_t count = size_t(layer.image.width()) * layer.image.height();
+    if (raw.size() != qsizetype(count * sizeof(int)))
+        return false;
+    auto values = std::make_shared<std::vector<int>>(count);
+    std::memcpy(values->data(), raw.constData(), size_t(raw.size()));
+    layer.periods = std::move(values);
+    return true;
+}
+
+bool ParameterView::loadColorValues(Layer& layer) {
+    if (layer.colorValues)
+        return true;
+    if (layer.colorValuesPath.isEmpty())
+        return false;
+    QFile file(layer.colorValuesPath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray raw = qUncompress(file.readAll());
+    const size_t count = size_t(layer.image.width()) * layer.image.height();
+    if (raw.size() != qsizetype(count * sizeof(float)))
+        return false;
+    auto values = std::make_shared<std::vector<float>>(count);
+    std::memcpy(values->data(), raw.constData(), size_t(raw.size()));
+    layer.colorValues = std::move(values);
+    return true;
 }
 
 void ParameterView::paintEvent(QPaintEvent*) {
@@ -268,6 +510,11 @@ void ParameterView::resizeEvent(QResizeEvent*) {
         width() - resetButton_->sizeHint().width() -
             fractalButton_->sizeHint().width() - 12,
         2);
+    ultraPalette_->adjustSize();
+    ultraPalette_->move(8, height() - 91);
+    paletteControls_->adjustSize();
+    paletteControls_->move(
+        width() - paletteControls_->width() - 8, height() - 91);
 }
 
 void ParameterView::mousePressEvent(QMouseEvent* event) {
@@ -382,13 +629,13 @@ const std::vector<ParameterView::Layer>* ParameterView::activeLayers() const {
 
 std::optional<ParameterView::PixelSelection>
 ParameterView::snapToPixel(
-    std::pair<PreciseDecimal, PreciseDecimal> world) const {
-    const auto* layers = activeLayers();
+    std::pair<PreciseDecimal, PreciseDecimal> world) {
+    auto* layers = activeLayers();
     if (!layers)
         return {};
 
-    const Layer* best = nullptr;
-    for (const auto& layer : *layers) {
+    Layer* best = nullptr;
+    for (auto& layer : *layers) {
         const PreciseDecimal left = std::min(layer.xmin, layer.xmax);
         const PreciseDecimal right = std::max(layer.xmin, layer.xmax);
         const PreciseDecimal bottom = std::min(layer.ymin, layer.ymax);
@@ -400,6 +647,8 @@ ParameterView::snapToPixel(
     }
     if (!best)
         return {};
+
+    loadPeriods(*best);
 
     const double ux = preciseDouble(
         (world.first - best->xmin) / (best->xmax - best->xmin));
@@ -485,19 +734,33 @@ void ParameterView::drawLegend(QPainter& painter) const {
     constexpr int height = 10;
 
     QImage gradient(width, height, QImage::Format_RGB32);
+    const auto palette = paletteSettings();
     for (int column = 0; column < width; ++column) {
         const double u = double(column) / std::max(1, width - 1);
-        const double period = 1 - std::log(std::max(1e-6, 1 - u)) / .24;
+        const double period = palette.ultraFractal
+            ? 1 + u * std::max(1, palette.maximumPeriod - 1)
+            : 1 - std::log(std::max(1e-6, 1 - u)) / .24;
         for (int row = 0; row < height; ++row)
             gradient.setPixelColor(
-                column, row, periodColor(int(std::round(period))));
+                column, row, periodColor(period, palette));
     }
     painter.drawImage(x, y, gradient);
 
     painter.setPen(QColor(220, 220, 220));
     painter.setFont(QFont(painter.font().family(), 8));
-    for (const int period : {1, 2, 3, 4, 5, 10, 20}) {
-        const double u = 1 - std::exp(-.24 * (period - 1));
+    std::vector<int> ticks{1, 2, 3, 4, 5, 10, 20};
+    if (palette.ultraFractal) {
+        ticks = {1, std::max(2, palette.maximumPeriod / 4),
+                 std::max(2, palette.maximumPeriod / 2),
+                 std::max(2, 3 * palette.maximumPeriod / 4),
+                 palette.maximumPeriod};
+        std::sort(ticks.begin(), ticks.end());
+        ticks.erase(std::unique(ticks.begin(), ticks.end()), ticks.end());
+    }
+    for (const int period : ticks) {
+        const double u = palette.ultraFractal
+            ? palettePosition(period, palette)
+            : 1 - std::exp(-.24 * (period - 1));
         const int tick = std::clamp(
             x + int(u * (width - 1)), x, x + width - 1);
         painter.drawLine(tick, y + height, tick, y + height + 3);
@@ -517,10 +780,17 @@ void ParameterView::drawLegend(QPainter& painter) const {
         painter.drawText(itemX + 13, itemY + 9, text);
         itemX += 17 + painter.fontMetrics().horizontalAdvance(text);
     };
-    item(QColor(20, 20, 28), labels[0]);
-    item(QColor(175, 35, 45), labels[1]);
-    item(QColor(255, 140, 55), labels[2]);
-    item(QColor(245, 90, 90), labels[3]);
+    if (palette.ultraFractal) {
+        item(QColor(190, 35, 45), labels[0]);
+        item(QColor(0, 0, 0), labels[1]);
+        item(QColor(190, 35, 45), labels[2]);
+        item(QColor(190, 35, 45), labels[3]);
+    } else {
+        item(QColor(20, 20, 28), labels[0]);
+        item(QColor(175, 35, 45), labels[1]);
+        item(QColor(255, 140, 55), labels[2]);
+        item(QColor(245, 90, 90), labels[3]);
+    }
 }
 
 QPointF ParameterView::dragEnd(QPointF raw, bool preserveAspect) const {
@@ -560,7 +830,7 @@ QPointF ParameterView::dragEnd(QPointF raw, bool preserveAspect) const {
 }
 
 QRect ParameterView::canvasRect() const {
-    const QRect available = rect().adjusted(8, 44, -8, -68);
+    const QRect available = rect().adjusted(8, 44, -8, -96);
     const int side = std::min(available.width(), available.height());
     return QRect(available.center().x() - side / 2,
                  available.center().y() - side / 2, side, side);

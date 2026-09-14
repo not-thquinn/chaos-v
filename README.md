@@ -16,15 +16,18 @@ An event-driven desktop explorer for a two-segment, falling-ball chaotic system.
   tiles, and exports the current image as PNG.
 - Optionally shifts each period toward the next period color according to a
   causal expansion margin derived from relevant cross-boundary near misses.
+- Can recolor retained fractional-period data with the classic Ultra Fractal
+  gradient and an adjustable period-distribution curve.
 - Lets a click in the parameter plane run and animate the corresponding
   simulation.
 - Shift-clicks rendered pixels at their exact source coordinates and can copy
   or restore the complete selected simulation as JSON.
 - Persists completed fractal layers between sessions, grouped by the physical
   parameters that determine the underlying simulation.
-- Produces numbered parameter sweeps, animated fractal zooms, and perfectly
-  looping simulation-frame sequences. Long bulk renders can be paused and
-  resumed across application restarts.
+- Produces numbered, timed parameter sweeps that interpolate several physics
+  settings between two simulation JSON configurations, animated fractal zooms,
+  and perfectly looping simulation-frame sequences. Long bulk renders can be
+  paused and resumed across application restarts.
 
 Period detection follows the discrete ball-ball collision graph. It expands
 the smallest prefix of ball IDs until no collision component crosses the

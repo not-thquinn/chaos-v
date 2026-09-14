@@ -31,8 +31,31 @@ double zoomCenterProgress(
         return 0;
     if (panTime <= 0)
         return 1;
-    return easedZoomProgress(
-        std::min(time, panTime), panTime, panDampingTime);
+    const double t = std::clamp(time, 0., panTime);
+    const double damping = std::clamp(panDampingTime, 0., panTime / 2);
+    if (damping == 0)
+        return t / panTime;
+
+    // Ramp velocity along a quarter circle. It arrives at the constant-speed
+    // section with both matching velocity and zero acceleration, avoiding the
+    // visible kink produced by the former polynomial ramp.
+    constexpr double pi = 3.14159265358979323846;
+    const double rampArea = pi / 4;
+    const double distanceScale =
+        panTime - 2 * damping + 2 * damping * rampArea;
+    const auto rampDistance = [&](double rampTime) {
+        const double u = std::clamp(rampTime / damping, 0., 1.);
+        const double z = u - 1;
+        const double integral = .5 *
+            (z * std::sqrt(std::max(0., 1 - z * z)) + std::asin(z)) +
+            pi / 4;
+        return damping * integral / distanceScale;
+    };
+    if (t < damping)
+        return rampDistance(t);
+    if (t > panTime - damping)
+        return 1 - rampDistance(panTime - t);
+    return (t - damping + damping * rampArea) / distanceScale;
 }
 
 std::optional<std::array<PreciseDecimal, 4>> fitZoomCamera(

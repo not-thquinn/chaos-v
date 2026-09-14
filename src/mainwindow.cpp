@@ -4,6 +4,7 @@
 #include "fractal_shading.h"
 #include "precise_spinbox.h"
 #include "render_schedule.h"
+#include "sequence_fuser_dialog.h"
 #include "simulation_export_dialog.h"
 #include "views.h"
 #include "zoom_math.h"
@@ -26,6 +27,7 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QPushButton>
+#include <QProgressDialog>
 #include <QRunnable>
 #include <QSaveFile>
 #include <QScrollArea>
@@ -39,6 +41,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <stdexcept>
 
 namespace {
 QJsonObject bulkConfigJson(const Config& c) {
@@ -77,6 +80,19 @@ QJsonArray axesJson(const std::array<PreciseDecimal, 4>& axes) {
 std::array<PreciseDecimal, 4> axesFromJson(const QJsonArray& a) {
     return {preciseDecimal(a[0].toString()), preciseDecimal(a[1].toString()),
             preciseDecimal(a[2].toString()), preciseDecimal(a[3].toString())};
+}
+QString formatElapsed(qint64 milliseconds) {
+    const qint64 seconds = std::max<qint64>(0, (milliseconds + 500) / 1000);
+    if (seconds < 60)
+        return QString("%1 s").arg(seconds);
+    if (seconds < 3600)
+        return QString("%1:%2")
+            .arg(seconds / 60)
+            .arg(seconds % 60, 2, 10, QChar('0'));
+    return QString("%1:%2:%3")
+        .arg(seconds / 3600)
+        .arg((seconds / 60) % 60, 2, 10, QChar('0'))
+        .arg(seconds % 60, 2, 10, QChar('0'));
 }
 QImage cropFractal(const QImage& source,
                    const std::array<PreciseDecimal, 4>& sourceAxes,
@@ -118,9 +134,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     }
 
     parameterView_->setLayerKey(groundTruthKey());
-    loadFractals();
     restorePausedBulkRender();
     updateAxes();
+    loadFractals();
     simulationView_->setPlaybackSpeed(playbackSpeed_->value());
     simulationView_->setCameraState(
         settings_.value("cameraX", 0.).toDouble(),
@@ -239,6 +255,7 @@ void MainWindow::buildUi() {
     renderButton_ = new QPushButton("Generate fractal");
     sweepButton_ = new QPushButton("Generate parameter sweep…");
     zoomButton_ = new QPushButton("Generate fractal zoom…");
+    fuseButton_ = new QPushButton("Fuse image sequences…");
     cancelRenderButton_ = new QPushButton("Cancel rendering");
     cancelRenderButton_->setEnabled(false);
     pauseRenderButton_ = new QPushButton("Pause bulk render");
@@ -255,6 +272,7 @@ void MainWindow::buildUi() {
     form->addRow(renderButton_);
     form->addRow(sweepButton_);
     form->addRow(zoomButton_);
+    form->addRow(fuseButton_);
     form->addRow(cancelRenderButton_);
     form->addRow(pauseRenderButton_);
     form->addRow(resumeRenderButton_);
@@ -282,7 +300,7 @@ void MainWindow::buildUi() {
         segmentLength_, spawnInterval_, spawnY_, cutoff_, xmin_, xmax_, ymin_, ymax_,
         fractalWidth_, fractalHeight_, maxBalls_, analysisBalls_,
         collisionBudget_, precisionBits_, renderButton_, sweepButton_,
-        zoomButton_, pasteButton_, expansionMarginShading_,
+        zoomButton_, fuseButton_, pasteButton_, expansionMarginShading_,
         expansionShadingStrength_, expansionMarginScale_
     };
 
@@ -326,6 +344,7 @@ void MainWindow::buildUi() {
             ymin_->setValue(bottom);
             ymax_->setValue(top);
         }
+        loadVisibleFractals();
     });
     connect(renderButton_, &QPushButton::clicked,
             this, &MainWindow::renderFractal);
@@ -333,6 +352,8 @@ void MainWindow::buildUi() {
             this, &MainWindow::showSweepDialog);
     connect(zoomButton_, &QPushButton::clicked,
             this, &MainWindow::showZoomDialog);
+    connect(fuseButton_, &QPushButton::clicked,
+            this, &MainWindow::fuseImageSequences);
     connect(cancelRenderButton_, &QPushButton::clicked, this, [this] {
         if (!cancel_)
             return;
@@ -362,6 +383,7 @@ void MainWindow::buildUi() {
             if (applyingJson_)
                 return;
             parameterView_->setLayerKey(groundTruthKey());
+            loadVisibleFractals();
             scheduleSimulation();
         });
     }
@@ -428,11 +450,13 @@ void MainWindow::scheduleSimulation() {
 void MainWindow::updateAxes() {
     parameterView_->setAxes(
         xmin_->value(), xmax_->value(), ymin_->value(), ymax_->value());
+    loadVisibleFractals();
 }
 
 void MainWindow::setParametersEnabled(bool enabled) {
     for (auto* control : lockedControls_)
         control->setEnabled(enabled);
+    parameterView_->setPaletteControlsEnabled(enabled);
 }
 
 void MainWindow::runSelectedSimulation() {
@@ -487,7 +511,7 @@ QJsonObject MainWindow::groundTruthJson() const {
 
 QJsonObject MainWindow::groundTruthJson(const Config& config) const {
     QJsonObject object;
-    object["modelVersion"] = 12;
+    object["modelVersion"] = 13;
     object["gravity"] = config.gravity;
     object["ballRadius"] = config.radius;
     object["restitution"] = std::max(.5, config.restitution);
@@ -628,6 +652,7 @@ void MainWindow::pasteSimulationJson() {
     selectedAngles_ = {{left, right}};
     parameterView_->setSelection(left, right);
     parameterView_->setLayerKey(groundTruthKey());
+    loadVisibleFractals();
     updateAxes();
     simulationView_->setPlaybackSpeed(playbackSpeed_->value());
     scheduleSimulation();
@@ -643,6 +668,10 @@ QJsonObject MainWindow::renderSettingsJson() const {
     object["expansionMarginShading"] = expansionMarginShading_->isChecked();
     object["expansionShadingStrength"] = expansionShadingStrength_->value();
     object["expansionMarginScale"] = expansionMarginScale_->value();
+    const auto palette = parameterView_->paletteSettings();
+    object["ultraFractalPalette"] = palette.ultraFractal;
+    object["paletteCurve"] = palette.curve;
+    object["paletteMaximumPeriod"] = palette.maximumPeriod;
     return object;
 }
 
@@ -662,18 +691,14 @@ void MainWindow::renderFractal() {
 }
 
 void MainWindow::showSweepDialog() {
-    SweepDialog dialog(config(), this);
+    const QString currentJson = QString::fromUtf8(
+        QJsonDocument(simulationJson()).toJson(QJsonDocument::Compact));
+    SweepDialog dialog(
+        currentJson, fractalWidth_->value(), fractalHeight_->value(), this);
     if (dialog.exec() != QDialog::Accepted)
         return;
 
     const SweepDefinition definition = dialog.definition();
-    if (!(definition.maximum >= definition.minimum) ||
-        !(definition.increment > 0)) {
-        QMessageBox::warning(
-            this, "Invalid sweep",
-            "Maximum must be at least the minimum, and increment must be positive.");
-        return;
-    }
 
     QString basePath = QFileDialog::getSaveFileName(
         this, "Choose image base name",
@@ -685,10 +710,7 @@ void MainWindow::showSweepDialog() {
     if (basePath.endsWith(".png", Qt::CaseInsensitive))
         basePath.chop(4);
 
-    const long double span =
-        static_cast<long double>(definition.maximum) - definition.minimum;
-    const qint64 count = qint64(std::floor(
-        span / static_cast<long double>(definition.increment) + 1e-12L)) + 1;
+    const qint64 count = definition.frameCount;
     if (count <= 0) {
         QMessageBox::warning(this, "Invalid sweep", "The sweep is empty.");
         return;
@@ -713,10 +735,12 @@ void MainWindow::showSweepDialog() {
         basePath,
         0,
         count,
-        fractalWidth_->value(),
-        fractalHeight_->value()
+        definition.width,
+        definition.height
     };
     clearPausedBulkRender();
+    bulkElapsedBeforeMs_ = 0;
+    bulkRenderClock_.start();
     rendering_ = true;
     setParametersEnabled(false);
     cancelRenderButton_->setEnabled(true);
@@ -724,27 +748,10 @@ void MainWindow::showSweepDialog() {
     startNextSweepImage();
 }
 
-void MainWindow::applySweepValue(
-    Config& config, SweepParameter parameter, double value) {
-    switch (parameter) {
-    case SweepParameter::Gravity: config.gravity = value; break;
-    case SweepParameter::BallRadius: config.radius = value; break;
-    case SweepParameter::Restitution: config.restitution = value; break;
-    case SweepParameter::SegmentGap:
-        config.gap = value;
-        config.spawnX = -value / 2;
-        break;
-    case SweepParameter::SegmentLength: config.segmentLength = value; break;
-    case SweepParameter::SpawnInterval: config.spawnInterval = value; break;
-    case SweepParameter::SpawnY: config.spawnY = value; break;
-    case SweepParameter::CutoffY: config.cutoffY = value; break;
-    }
-}
-
 void MainWindow::restoreSweepSettings() {
     if (!sweep_)
         return;
-    const Config& original = sweep_->baseConfig;
+    const Config& original = sweep_->originalConfig;
     applyingJson_ = true;
     gravity_->setValue(original.gravity);
     radius_->setValue(original.radius);
@@ -760,16 +767,15 @@ void MainWindow::restoreSweepSettings() {
 void MainWindow::startNextSweepImage() {
     if (!sweep_)
         return;
-    Config point = sweep_->baseConfig;
-    const double value = sweep_->definition.minimum +
-                         double(sweep_->index) * sweep_->definition.increment;
-    applySweepValue(point, sweep_->definition.parameter, value);
+    const double progress = sweep_->count <= 1
+        ? 1.
+        : double(sweep_->index) / double(sweep_->count - 1);
+    Config point = interpolateSweepConfig(sweep_->definition, progress);
     const QJsonObject truth = groundTruthJson(point);
-    const QString prefix = QString("Sweep %1/%2 — %3=%4")
+    const QString prefix = QString("Sweep %1/%2 — %3%")
         .arg(sweep_->index + 1)
         .arg(sweep_->count)
-        .arg(sweep_->definition.label)
-        .arg(value, 0, 'g', 12);
+        .arg(progress * 100., 0, 'f', 1);
     startFractalRender(
         point, groundTruthKey(truth), truth, renderSettingsJson(),
         sweep_->axes, sweep_->width, sweep_->height, false, prefix);
@@ -806,6 +812,8 @@ void MainWindow::showZoomDialog() {
         cancel_->store(true);
     zoom_ = ZoomState{definition, basePath, 0};
     clearPausedBulkRender();
+    bulkElapsedBeforeMs_ = 0;
+    bulkRenderClock_.start();
     rendering_ = true;
     setParametersEnabled(false);
     cancelRenderButton_->setEnabled(true);
@@ -905,13 +913,15 @@ void MainWindow::savePausedBulkRender() {
         root["count"] = sweep_->count;
         root["width"] = sweep_->width; root["height"] = sweep_->height;
         root["axes"] = axesJson(sweep_->axes);
-        root["config"] = bulkConfigJson(sweep_->baseConfig);
+        root["config"] = bulkConfigJson(sweep_->originalConfig);
         QJsonObject d;
-        d["parameter"] = int(sweep_->definition.parameter);
-        d["label"] = sweep_->definition.label;
-        d["minimum"] = sweep_->definition.minimum;
-        d["maximum"] = sweep_->definition.maximum;
-        d["increment"] = sweep_->definition.increment;
+        d["startConfig"] = bulkConfigJson(sweep_->definition.startConfig);
+        d["endConfig"] = bulkConfigJson(sweep_->definition.endConfig);
+        d["frameRate"] = sweep_->definition.frameRate;
+        d["duration"] = sweep_->definition.duration;
+        d["frameCount"] = sweep_->definition.frameCount;
+        d["width"] = sweep_->definition.width;
+        d["height"] = sweep_->definition.height;
         root["definition"] = d;
     } else if (zoom_) {
         root["kind"] = "zoom";
@@ -929,6 +939,8 @@ void MainWindow::savePausedBulkRender() {
         root["width"] = z.width; root["height"] = z.height;
     }
     if (!root.isEmpty()) {
+        root["elapsedMs"] = bulkElapsedBeforeMs_ +
+            (bulkRenderClock_.isValid() ? bulkRenderClock_.elapsed() : 0);
         settings_.setValue("pausedBulkRender",
             QJsonDocument(root).toJson(QJsonDocument::Compact));
         settings_.sync();
@@ -940,13 +952,20 @@ void MainWindow::restorePausedBulkRender() {
     if (bytes.isEmpty())
         return;
     const QJsonObject root = QJsonDocument::fromJson(bytes).object();
+    bulkElapsedBeforeMs_ = root["elapsedMs"].toInteger(0);
+    bulkRenderClock_.invalidate();
     try {
         if (root["kind"].toString() == "sweep") {
             const QJsonObject d = root["definition"].toObject();
+            if (!d.value("startConfig").isObject() ||
+                !d.value("endConfig").isObject())
+                throw std::runtime_error("obsolete sweep state");
             SweepDefinition definition{
-                SweepParameter(d["parameter"].toInt()), d["label"].toString(),
-                d["minimum"].toDouble(), d["maximum"].toDouble(),
-                d["increment"].toDouble()};
+                bulkConfig(d["startConfig"].toObject()),
+                bulkConfig(d["endConfig"].toObject()),
+                d["frameRate"].toDouble(), d["duration"].toDouble(),
+                d["frameCount"].toInteger(),
+                d["width"].toInt(), d["height"].toInt()};
             sweep_ = SweepState{definition, bulkConfig(root["config"].toObject()),
                 axesFromJson(root["axes"].toArray()), root["basePath"].toString(),
                 root["index"].toInteger(), root["count"].toInteger(),
@@ -991,6 +1010,7 @@ void MainWindow::resumeBulkRender() {
         return;
     }
     clearPausedBulkRender();
+    bulkRenderClock_.start();
     rendering_ = true;
     setParametersEnabled(false);
     cancelRenderButton_->setEnabled(true);
@@ -1012,7 +1032,8 @@ void MainWindow::startFractalRender(
     setThreadRealPrecision(base.precisionBits);
     parameterView_->setLayerKey(key);
     if (!parameterView_->beginLayer(
-            width, height, axes[0], axes[1], axes[2], axes[3], base)) {
+            width, height, axes[0], axes[1], axes[2], axes[3], base,
+            parameterView_->paletteSettings())) {
         restoreSweepSettings();
         sweep_.reset();
         zoom_.reset();
@@ -1045,6 +1066,7 @@ void MainWindow::startFractalRender(
     const bool shadeExpansionMargin = expansionMarginShading_->isChecked();
     const double shadingStrength = expansionShadingStrength_->value();
     const double shadingScale = expansionMarginScale_->value();
+    const FractalPaletteSettings palette = parameterView_->paletteSettings();
     base.trackExpansionMargin = shadeExpansionMargin;
 
     for (const RenderTileJob job : schedule) {
@@ -1061,6 +1083,8 @@ void MainWindow::startFractalRender(
                 tileClock.start();
                 QImage image(tileWidth, tileHeight, QImage::Format_RGB32);
                 std::vector<int> tilePeriods(size_t(tileWidth) * tileHeight, 0);
+                std::vector<float> tileColorValues(
+                    size_t(tileWidth) * tileHeight, 0);
                 for (int y = 0; y < tileHeight && !token->load(); ++y) {
                     for (int x = 0; x < tileWidth && !token->load(); ++x) {
                         Config point = base;
@@ -1079,10 +1103,12 @@ void MainWindow::startFractalRender(
                         if (classification.outcome == Outcome::Periodic)
                             tilePeriods[size_t(y) * tileWidth + x] =
                                 classification.period;
+                        const float colorValue = fractalColorValue(
+                            classification, shadeExpansionMargin,
+                            shadingStrength, shadingScale);
+                        tileColorValues[size_t(y) * tileWidth + x] = colorValue;
                         image.setPixel(
-                            x, y, shadeFractalResult(
-                                classification, shadeExpansionMargin,
-                                shadingStrength, shadingScale).rgb());
+                            x, y, colorForFractalValue(colorValue, palette).rgb());
                     }
                 }
 
@@ -1099,7 +1125,8 @@ void MainWindow::startFractalRender(
                             return;
                         if (!token->load())
                             parameterView_->tile(
-                                originX, originY, image, tilePeriods);
+                                originX, originY, image, tilePeriods,
+                                tileColorValues);
 
                         const int done = total - left;
                         if (left == 0) {
@@ -1139,12 +1166,16 @@ void MainWindow::startFractalRender(
                                     finishRendering("Could not save " + path);
                                 } else if (++sweep_->index >= sweep_->count) {
                                     const qint64 savedCount = sweep_->count;
+                                    const qint64 elapsed = bulkElapsedBeforeMs_ +
+                                        (bulkRenderClock_.isValid()
+                                             ? bulkRenderClock_.elapsed() : 0);
                                     restoreSweepSettings();
                                     sweep_.reset();
                                     clearPausedBulkRender();
                                     finishRendering(QString(
-                                        "Sweep complete — %1 images saved")
-                                        .arg(savedCount));
+                                        "Sweep complete — %1 images saved — elapsed %2")
+                                        .arg(savedCount)
+                                        .arg(formatElapsed(elapsed)));
                                 } else {
                                     QTimer::singleShot(
                                         0, this, &MainWindow::startNextSweepImage);
@@ -1197,14 +1228,18 @@ void MainWindow::startFractalRender(
                                     zoom_->index >= zoom_->definition.frameCount) {
                                     const qint64 savedCount =
                                         zoom_->definition.frameCount;
+                                    const qint64 elapsed = bulkElapsedBeforeMs_ +
+                                        (bulkRenderClock_.isValid()
+                                             ? bulkRenderClock_.elapsed() : 0);
                                     const auto finalAxes = zoom_->groupAxes.back();
                                     parameterView_->replaceLatestLayer(
                                         std::move(lastOutput), finalAxes);
                                     zoom_.reset();
                                     clearPausedBulkRender();
                                     finishRendering(QString(
-                                        "Zoom complete — %1 frames saved")
-                                        .arg(savedCount), false);
+                                        "Zoom complete — %1 frames saved — elapsed %2")
+                                        .arg(savedCount)
+                                        .arg(formatElapsed(elapsed)), false);
                                 } else if (saved && zoom_) {
                                     parameterView_->removeLatestLayer();
                                     QTimer::singleShot(
@@ -1286,25 +1321,155 @@ void MainWindow::loadFractals() {
     for (const auto& value : document.object().value("layers").toArray()) {
         const QJsonObject object = value.toObject();
         const QString name = object.value("file").toString();
-        if (name.isEmpty() || QFileInfo(name).fileName() != name)
+        if (name.isEmpty() || QFileInfo(name).fileName() != name ||
+            !QFileInfo::exists(QDir(fractalDirectory_).filePath(name)))
             continue;
+        valid.append(object);
+    }
+    storedLayers_ = valid;
+
+    // Let the main window become visible before decoding retained images.
+    QTimer::singleShot(0, this, &MainWindow::loadVisibleFractals);
+}
+
+void MainWindow::loadVisibleFractals() {
+    if (storedLayers_.isEmpty() || fractalDirectory_.isEmpty())
+        return;
+
+    const QString key = groundTruthKey();
+    const auto view = parameterView_->axes();
+    const PreciseDecimal viewLeft = std::min(view[0], view[1]);
+    const PreciseDecimal viewRight = std::max(view[0], view[1]);
+    const PreciseDecimal viewBottom = std::min(view[2], view[3]);
+    const PreciseDecimal viewTop = std::max(view[2], view[3]);
+    const PreciseDecimal viewWidth = viewRight - viewLeft;
+    const PreciseDecimal viewHeight = viewTop - viewBottom;
+    if (viewWidth == 0 || viewHeight == 0)
+        return;
+
+    struct Candidate {
+        QJsonObject object;
+        double detail = 0;
+        QRectF screenRect;
+    };
+    std::vector<Candidate> candidates;
+    for (const auto& value : storedLayers_) {
+        const QJsonObject object = value.toObject();
+        if (object.value("groundTruthKey").toString() != key)
+            continue;
+        const QString name = object.value("file").toString();
+        if (loadedFractalFiles_.contains(name))
+            continue;
+        try {
+            const PreciseDecimal left = preciseDecimal(
+                object.value("xminExact").toString(
+                    QString::number(object.value("xmin").toDouble(), 'g', 17)));
+            const PreciseDecimal right = preciseDecimal(
+                object.value("xmaxExact").toString(
+                    QString::number(object.value("xmax").toDouble(), 'g', 17)));
+            const PreciseDecimal bottom = preciseDecimal(
+                object.value("yminExact").toString(
+                    QString::number(object.value("ymin").toDouble(), 'g', 17)));
+            const PreciseDecimal top = preciseDecimal(
+                object.value("ymaxExact").toString(
+                    QString::number(object.value("ymax").toDouble(), 'g', 17)));
+            const PreciseDecimal layerLeft = std::min(left, right);
+            const PreciseDecimal layerRight = std::max(left, right);
+            const PreciseDecimal layerBottom = std::min(bottom, top);
+            const PreciseDecimal layerTop = std::max(bottom, top);
+            if (layerRight < viewLeft || layerLeft > viewRight ||
+                layerTop < viewBottom || layerBottom > viewTop)
+                continue;
+
+            const double projectedWidth = preciseDouble(
+                (layerRight - layerLeft) / viewWidth) *
+                std::max(1, parameterView_->width());
+            const double projectedHeight = preciseDouble(
+                (layerTop - layerBottom) / viewHeight) *
+                std::max(1, parameterView_->height());
+            // Tiny deep layers add no useful information at this viewport.
+            // They are decoded when the user zooms close enough for both
+            // dimensions to cover more than eight screen pixels.
+            if (projectedWidth <= 8 || projectedHeight <= 8)
+                continue;
+            const PreciseDecimal area =
+                (layerRight - layerLeft) * (layerTop - layerBottom);
+            const double detail = area == 0 ? 0 : preciseDouble(
+                PreciseDecimal(object.value("width").toInt()) *
+                object.value("height").toInt() / area);
+            const double screenX = preciseDouble(
+                (layerLeft - viewLeft) / viewWidth) * parameterView_->width();
+            const double screenY = preciseDouble(
+                (viewTop - layerTop) / viewHeight) * parameterView_->height();
+            candidates.push_back({
+                object, detail,
+                QRectF(screenX, screenY, projectedWidth, projectedHeight)});
+        } catch (...) {
+            continue;
+        }
+    }
+    // Build a small screen-space image pyramid: for each sample across the
+    // viewport, retain only the highest-detail layer that can paint it.
+    // Fully hidden intermediate zoom levels therefore stay compressed.
+    QSet<int> selected;
+    constexpr int grid = 32;
+    for (int row = 0; row < grid; ++row) {
+        for (int column = 0; column < grid; ++column) {
+            const QPointF sample(
+                (column + .5) * parameterView_->width() / grid,
+                (row + .5) * parameterView_->height() / grid);
+            int best = -1;
+            for (int index = 0; index < int(candidates.size()); ++index) {
+                if (candidates[index].screenRect.contains(sample) &&
+                    (best < 0 || candidates[index].detail >
+                                      candidates[best].detail))
+                    best = index;
+            }
+            if (best >= 0)
+                selected.insert(best);
+        }
+    }
+    std::vector<Candidate> visible;
+    visible.reserve(selected.size());
+    for (const int index : selected)
+        visible.push_back(candidates[size_t(index)]);
+    std::sort(visible.begin(), visible.end(),
+              [](const Candidate& first, const Candidate& second) {
+                  return first.detail < second.detail;
+              });
+
+    for (const Candidate& candidate : visible) {
+        const QJsonObject object = candidate.object;
+        const QString name = object.value("file").toString();
         QImage image(QDir(fractalDirectory_).filePath(name));
         if (image.isNull())
             continue;
-        std::vector<int> periods;
         const QString periodsName = object.value("periodsFile").toString();
-        if (!periodsName.isEmpty() && QFileInfo(periodsName).fileName() == periodsName) {
-            QFile periodFile(QDir(fractalDirectory_).filePath(periodsName));
-            if (periodFile.open(QIODevice::ReadOnly)) {
-                const QByteArray raw = qUncompress(periodFile.readAll());
-                const qsizetype expectedBytes =
-                    qsizetype(image.width()) * image.height() * qsizetype(sizeof(int));
-                if (raw.size() == expectedBytes) {
-                    periods.resize(size_t(image.width()) * image.height());
-                    std::memcpy(periods.data(), raw.constData(), size_t(raw.size()));
-                }
-            }
-        }
+        const QString colorsName = object.value("colorsFile").toString();
+        const QJsonObject renderSettings =
+            object.value("renderSettings").toObject();
+        const auto palette = parameterView_->paletteSettings();
+        const bool savedUltra =
+            renderSettings.value("ultraFractalPalette").toBool(false);
+        const double savedCurve =
+            renderSettings.value("paletteCurve").toDouble(.5);
+        const int savedMaximum =
+            renderSettings.value("paletteMaximumPeriod").toInt(50);
+        const bool recolor =
+            savedUltra != palette.ultraFractal ||
+            std::abs(savedCurve - palette.curve) > 1e-12 ||
+            savedMaximum != palette.maximumPeriod;
+        const QString periodsPath =
+            !periodsName.isEmpty() &&
+                    QFileInfo(periodsName).fileName() == periodsName
+                ? QDir(fractalDirectory_).filePath(periodsName)
+                : QString();
+        const QString colorsPath =
+            !colorsName.isEmpty() && QFileInfo(colorsName).fileName() == colorsName
+                ? QDir(fractalDirectory_).filePath(colorsName)
+                : QString();
+        const FractalPaletteSettings savedPalette{
+            savedUltra, savedCurve, savedMaximum};
         parameterView_->addStoredLayer(
             object.value("groundTruthKey").toString(), std::move(image),
             object.value("xminExact").toString(
@@ -1319,10 +1484,9 @@ void MainWindow::loadFractals() {
             object.value("renderSettings").toObject().value("ballsToAnalyze").toInt(),
             object.value("renderSettings").toObject().value("maxLiveBalls").toInt(),
             object.value("renderSettings").toObject().value("collisionBudget").toInt(),
-            std::move(periods));
-        valid.append(object);
+            {}, {}, recolor, periodsPath, colorsPath, savedPalette, true);
+        loadedFractalFiles_.insert(name);
     }
-    storedLayers_ = valid;
 }
 
 void MainWindow::persistLatestLayer(
@@ -1359,6 +1523,21 @@ void MainWindow::persistLatestLayer(
                 object["periodsFile"] = periodsName;
         }
     }
+    if (layer->colorValues && layer->colorValues->size() ==
+        size_t(layer->image.width()) * layer->image.height() &&
+        layer->colorValues->size() <=
+            size_t(std::numeric_limits<qsizetype>::max()) / sizeof(float)) {
+        QByteArray raw(qsizetype(layer->colorValues->size() * sizeof(float)),
+                       Qt::Uninitialized);
+        std::memcpy(raw.data(), layer->colorValues->data(), size_t(raw.size()));
+        const QString colorsName = id + ".colors";
+        QSaveFile colorsFile(QDir(fractalDirectory_).filePath(colorsName));
+        if (colorsFile.open(QIODevice::WriteOnly)) {
+            colorsFile.write(qCompress(raw, 9));
+            if (colorsFile.commit())
+                object["colorsFile"] = colorsName;
+        }
+    }
     object["groundTruthKey"] = key;
     object["groundTruth"] = truth;
     object["renderSettings"] = renderSettings;
@@ -1387,6 +1566,119 @@ void MainWindow::exportPng() {
         renderStatus_->setText("Could not save PNG");
     else
         renderStatus_->setText("PNG exported");
+}
+
+void MainWindow::fuseImageSequences() {
+    SequenceFuserDialog dialog(this);
+    if (dialog.exec() != QDialog::Accepted)
+        return;
+
+    std::vector<QStringList> sequences;
+    qsizetype frameCount = 0;
+    for (const QString& first : dialog.firstFrames()) {
+        QStringList sequence = discoverImageSequence(first);
+        if (sequence.isEmpty()) {
+            QMessageBox::warning(
+                this, "Invalid sequence", "Could not read a sequence from:\n" + first);
+            return;
+        }
+        frameCount = std::max(frameCount, sequence.size());
+        sequences.push_back(std::move(sequence));
+    }
+    if (frameCount <= 0)
+        return;
+
+    const QString outputDirectory = QFileDialog::getExistingDirectory(
+        this, "Choose or create output sequence directory",
+        settings_.value("lastImageSaveDirectory").toString(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (outputDirectory.isEmpty())
+        return;
+    settings_.setValue("lastImageSaveDirectory", outputDirectory);
+    settings_.sync();
+
+    if (frameCount > std::numeric_limits<int>::max()) {
+        QMessageBox::warning(
+            this, "Too many images",
+            "This sequence is too long for the progress display.");
+        return;
+    }
+    const int numberWidth = std::max(
+        3, int(QString::number(frameCount).size()));
+    const QString firstOutput = QDir(outputDirectory).filePath(
+        QString("fused_%1.png").arg(
+            QString::number(1).rightJustified(numberWidth, '0')));
+    if (QFileInfo::exists(firstOutput) &&
+        QMessageBox::question(
+            this, "Replace fused images?",
+            "Matching fused_###.png images already exist. Replace them?") !=
+            QMessageBox::Yes)
+        return;
+
+    QProgressDialog progress(
+        "Fusing image sequences…", "Cancel", 0, int(frameCount), this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+
+    for (qsizetype frame = 0; frame < frameCount; ++frame) {
+        QApplication::processEvents();
+        if (progress.wasCanceled()) {
+            renderStatus_->setText(QString(
+                "Sequence fusion canceled after %1 images").arg(frame));
+            return;
+        }
+
+        std::vector<QImage> images;
+        qint64 outputWidth = 0;
+        int outputHeight = 0;
+        for (const QStringList& sequence : sequences) {
+            const QString path = sequence[std::min(frame, sequence.size() - 1)];
+            QImage image(path);
+            if (image.isNull()) {
+                QMessageBox::critical(
+                    this, "Could not read image", "Could not read:\n" + path);
+                return;
+            }
+            outputWidth += image.width();
+            outputHeight = std::max(outputHeight, image.height());
+            images.push_back(std::move(image));
+        }
+        if (outputWidth <= 0 || outputWidth > std::numeric_limits<int>::max() ||
+            outputHeight <= 0) {
+            QMessageBox::critical(
+                this, "Images too large",
+                "The combined image dimensions are too large to allocate.");
+            return;
+        }
+
+        QImage output(int(outputWidth), outputHeight, QImage::Format_ARGB32);
+        if (output.isNull()) {
+            QMessageBox::critical(
+                this, "Images too large", "Could not allocate the combined image.");
+            return;
+        }
+        output.fill(Qt::black);
+        QPainter painter(&output);
+        int x = 0;
+        for (const QImage& image : images) {
+            painter.drawImage(x, (outputHeight - image.height()) / 2, image);
+            x += image.width();
+        }
+        painter.end();
+
+        const QString path = QDir(outputDirectory).filePath(
+            QString("fused_%1.png").arg(
+                QString::number(frame + 1).rightJustified(numberWidth, '0')));
+        if (!output.save(path, "PNG")) {
+            QMessageBox::critical(
+                this, "Could not save image", "Could not save:\n" + path);
+            return;
+        }
+        progress.setValue(int(frame + 1));
+    }
+    renderStatus_->setText(QString(
+        "Sequence fusion complete — %1 images saved").arg(frameCount));
 }
 
 void MainWindow::exportSimulationLoop() {
@@ -1535,6 +1827,10 @@ void MainWindow::restoreSettings() {
     expansionMarginScale_->setValue(
         settings_.value("expansionMarginScale",
                         settings_.value("certificateShadingScale", 5.)).toDouble());
+    parameterView_->setPaletteSettings({
+        settings_.value("ultraFractalPalette", false).toBool(),
+        settings_.value("paletteCurve", .5).toDouble(),
+        settings_.value("paletteMaximumPeriod", 50).toInt()});
 }
 
 void MainWindow::saveSettings() {
@@ -1574,6 +1870,10 @@ void MainWindow::saveSettings() {
                        expansionShadingStrength_->value());
     settings_.setValue("expansionMarginScale",
                        expansionMarginScale_->value());
+    const auto palette = parameterView_->paletteSettings();
+    settings_.setValue("ultraFractalPalette", palette.ultraFractal);
+    settings_.setValue("paletteCurve", palette.curve);
+    settings_.setValue("paletteMaximumPeriod", palette.maximumPeriod);
     settings_.remove("contractionMarginShading");
 
     const QPointF camera = simulationView_->cameraPosition();

@@ -10,6 +10,7 @@
 #include <QImage>
 #include <QJsonArray>
 #include <QMainWindow>
+#include <QSet>
 #include <QSettings>
 #include <QThreadPool>
 #include <QTimer>
@@ -44,7 +45,7 @@ protected:
 
 private:
     static QDoubleSpinBox* doubleSpin(
-        double value, double low, double high, int decimals = 3);
+        double value, double low, double high, int decimals = 7);
     static PreciseSpinBox* preciseSpin(
         const char* value, const char* low, const char* high,
         const char* step = "0.001");
@@ -80,17 +81,17 @@ private:
         int width, int height, bool persist,
         const QString& statusPrefix);
     void finishRendering(const QString& status, bool restoreFractalView = true);
-    static void applySweepValue(
-        Config& config, SweepParameter parameter, double value);
     void restoreSweepSettings();
     QString manifestPath() const;
     void writeManifest();
     void loadFractals();
+    void loadVisibleFractals();
     void persistLatestLayer(
         const QString& key, const QJsonObject& truth,
         const QJsonObject& renderSettings);
     void exportPng();
     void exportSimulationLoop();
+    void fuseImageSequences();
     QString suggestedSavePath(const QString& fileName) const;
     void rememberSaveDirectory(const QString& path);
     void restoreSettings();
@@ -104,6 +105,7 @@ private:
     QPushButton* renderButton_ = nullptr;
     QPushButton* sweepButton_ = nullptr;
     QPushButton* zoomButton_ = nullptr;
+    QPushButton* fuseButton_ = nullptr;
     QPushButton* cancelRenderButton_ = nullptr;
     QPushButton* pauseRenderButton_ = nullptr;
     QPushButton* resumeRenderButton_ = nullptr;
@@ -141,6 +143,8 @@ private:
     QSettings settings_{"ChaosV", "ChaosV"};
     QTimer previewDelay_;
     QElapsedTimer renderClock_;
+    QElapsedTimer bulkRenderClock_;
+    qint64 bulkElapsedBeforeMs_ = 0;
     QThreadPool renderPool_;
     QThreadPool previewPool_;
     std::optional<std::pair<PreciseDecimal, PreciseDecimal>> selectedAngles_;
@@ -155,10 +159,11 @@ private:
     std::vector<QWidget*> lockedControls_;
     QString fractalDirectory_;
     QJsonArray storedLayers_;
+    QSet<QString> loadedFractalFiles_;
 
     struct SweepState {
         SweepDefinition definition;
-        Config baseConfig;
+        Config originalConfig;
         std::array<PreciseDecimal, 4> axes;
         QString basePath;
         qint64 index = 0;

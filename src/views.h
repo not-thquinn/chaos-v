@@ -25,10 +25,23 @@ class QDoubleSpinBox;
 class QLabel;
 class QToolButton;
 class QWheelEvent;
+class QCheckBox;
+class QSlider;
+class QSpinBox;
+
+struct FractalPaletteSettings {
+    bool ultraFractal = false;
+    double curve = .5; // -1: sublinear, 0: linear, +1: superlinear
+    int maximumPeriod = 50;
+};
 
 QColor periodColor(int period);
 QColor periodColor(double period);
+QColor periodColor(double period, const FractalPaletteSettings& settings);
 QColor colorFor(const Result& result);
+QColor colorFor(const Result& result, const FractalPaletteSettings& settings);
+QColor colorForFractalValue(
+    float value, const FractalPaletteSettings& settings);
 
 class ParameterView : public QWidget {
     Q_OBJECT
@@ -46,6 +59,11 @@ public:
         int maxBalls = 0;
         int collisionBudget = 0;
         std::shared_ptr<std::vector<int>> periods;
+        std::shared_ptr<std::vector<float>> colorValues;
+        QString periodsPath;
+        QString colorValuesPath;
+        FractalPaletteSettings appliedPalette;
+        bool paletteKnown = false;
     };
 
     struct PixelSelection {
@@ -64,13 +82,20 @@ public:
     bool beginLayer(int width, int height,
                     const PreciseDecimal& left, const PreciseDecimal& right,
                     const PreciseDecimal& bottom, const PreciseDecimal& top,
-                    const Config& renderConfig);
+                    const Config& renderConfig,
+                    const FractalPaletteSettings& palette);
     void addStoredLayer(const QString& key, QImage image,
                         const QString& left, const QString& right,
                         const QString& bottom, const QString& top,
                         int precisionBits = 0, int analysisBalls = 0,
                         int maxBalls = 0, int collisionBudget = 0,
-                        std::vector<int> periods = {});
+                        std::vector<int> periods = {},
+                        std::vector<float> colorValues = {},
+                        bool recolor = true,
+                        const QString& periodsPath = {},
+                        const QString& colorValuesPath = {},
+                        const FractalPaletteSettings& savedPalette = {},
+                        bool paletteKnown = false);
     std::optional<Layer> latestLayer() const;
     void removeLatestLayer();
     void clearActiveLayers();
@@ -79,11 +104,15 @@ public:
     void setSelection(const PreciseDecimal& x, const PreciseDecimal& y);
     std::array<PreciseDecimal, 4> axes() const;
     void tile(int x, int y, const QImage& image,
-              const std::vector<int>& periods = {});
+              const std::vector<int>& periods = {},
+              const std::vector<float>& colorValues = {});
     void replaceLatestLayer(QImage image,
                             const std::array<PreciseDecimal, 4>& axes);
     QImage fractal() const;
     bool hasSelection() const;
+    FractalPaletteSettings paletteSettings() const;
+    void setPaletteSettings(const FractalPaletteSettings& settings);
+    void setPaletteControlsEnabled(bool enabled);
 
 signals:
     void chosen(const QString& x, const QString& y);
@@ -92,6 +121,7 @@ signals:
                      int collisionBudget);
     void zoomRequested(const QString& left, const QString& right,
                        const QString& bottom, const QString& top);
+    void paletteSettingsChanged();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -105,12 +135,15 @@ private:
     std::vector<Layer>* activeLayers();
     const std::vector<Layer>* activeLayers() const;
     std::optional<PixelSelection> snapToPixel(
-        std::pair<PreciseDecimal, PreciseDecimal> world) const;
+        std::pair<PreciseDecimal, PreciseDecimal> world);
     QImage composite(QSize size, const PreciseDecimal& left,
                      const PreciseDecimal& right,
                      const PreciseDecimal& bottom,
                      const PreciseDecimal& top) const;
     void drawLegend(QPainter& painter) const;
+    void recolorLayers();
+    bool loadPeriods(Layer& layer);
+    bool loadColorValues(Layer& layer);
     QPointF dragEnd(QPointF raw, bool preserveAspect) const;
     QRect canvasRect() const;
     std::pair<PreciseDecimal, PreciseDecimal> toWorld(QPointF point) const;
@@ -126,6 +159,10 @@ private:
     std::optional<std::pair<PreciseDecimal, PreciseDecimal>> selection_;
     QToolButton* resetButton_ = nullptr;
     QToolButton* fractalButton_ = nullptr;
+    QCheckBox* ultraPalette_ = nullptr;
+    QWidget* paletteControls_ = nullptr;
+    QSlider* paletteCurve_ = nullptr;
+    QSpinBox* paletteMaximum_ = nullptr;
     QRectF dragRect_;
     QPointF dragStart_;
     QPointF lastPan_;

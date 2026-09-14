@@ -1,7 +1,11 @@
 #include "views.h"
+#include "sweep_dialog.h"
+#include "sequence_fuser_dialog.h"
 
 #include <QApplication>
+#include <QImage>
 #include <QMouseEvent>
+#include <QTemporaryDir>
 
 #include <cmath>
 #include <iostream>
@@ -21,6 +25,55 @@ void sendMouse(
 int main(int argc, char** argv) {
     QApplication application(argc, argv);
     bool passed = true;
+
+    if (sweepFrameCount(30, 10) != 300 ||
+        sweepFrameCount(.1, 1) != 2 ||
+        sweepFrameCount(0, 10) != 0) {
+        std::cerr << "parameter sweep frame count failed\n";
+        passed = false;
+    }
+
+    SweepDefinition sweep;
+    sweep.startConfig.gravity = 100;
+    sweep.endConfig.gravity = 500;
+    sweep.startConfig.radius = 10;
+    sweep.endConfig.radius = 30;
+    sweep.startConfig.gap = 100;
+    sweep.endConfig.gap = 300;
+    sweep.startConfig.precisionBits = 64;
+    sweep.endConfig.precisionBits = 256;
+    const Config midpoint = interpolateSweepConfig(sweep, .5);
+    if (std::abs(midpoint.gravity - 300) > 1e-12 ||
+        std::abs(midpoint.radius - 20) > 1e-12 ||
+        std::abs(midpoint.gap - 200) > 1e-12 ||
+        std::abs(midpoint.spawnX + 100) > 1e-12 ||
+        midpoint.precisionBits != 64) {
+        std::cerr << "multi-parameter sweep interpolation failed\n";
+        passed = false;
+    }
+
+    QTemporaryDir sequenceDirectory;
+    if (!sequenceDirectory.isValid()) {
+        std::cerr << "could not create image-sequence test directory\n";
+        passed = false;
+    } else {
+        const auto framePath = [&](int number) {
+            return sequenceDirectory.filePath(
+                QString("sample_%1.png").arg(number, 3, 10, QChar('0')));
+        };
+        QImage frame(2, 1, QImage::Format_RGB32);
+        frame.fill(Qt::blue);
+        const bool imagesSaved = frame.save(framePath(1)) &&
+                                 frame.save(framePath(2)) &&
+                                 frame.save(framePath(3));
+        const QStringList discovered = discoverImageSequence(framePath(1));
+        if (!imagesSaved || discovered.size() != 3 ||
+            discovered.front() != framePath(1) ||
+            discovered.back() != framePath(3)) {
+            std::cerr << "image sequence discovery failed\n";
+            passed = false;
+        }
+    }
 
     ParameterView panView;
     panView.resize(500, 500);

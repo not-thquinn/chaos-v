@@ -3,42 +3,52 @@
 #include "physics.h"
 
 #include <QDialog>
-#include <QString>
+#include <QSettings>
 
-class QComboBox;
+#include <optional>
+
 class QDoubleSpinBox;
+class QLabel;
+class QPlainTextEdit;
+class QSpinBox;
 
-enum class SweepParameter {
-    Gravity,
-    BallRadius,
-    Restitution,
-    SegmentGap,
-    SegmentLength,
-    SpawnInterval,
-    SpawnY,
-    CutoffY
-};
+qint64 sweepFrameCount(double frameRate, double duration);
 
 struct SweepDefinition {
-    SweepParameter parameter = SweepParameter::BallRadius;
-    QString label;
-    double minimum = 0;
-    double maximum = 0;
-    double increment = 1;
+    Config startConfig;
+    Config endConfig;
+    double frameRate = 30;
+    double duration = 10;
+    qint64 frameCount = 300;
+    int width = 1920;
+    int height = 1080;
 };
+
+Config interpolateSweepConfig(
+    const SweepDefinition& definition, double progress);
 
 class SweepDialog : public QDialog {
 public:
-    explicit SweepDialog(const Config& current, QWidget* parent = nullptr);
+    SweepDialog(const QString& currentJson, int initialWidth,
+                int initialHeight, QWidget* parent = nullptr);
+    ~SweepDialog() override;
 
-    SweepDefinition definition() const;
+    const SweepDefinition& definition() const;
+
+protected:
+    void accept() override;
 
 private:
-    void selectParameter(int index);
+    void updateFrameCount();
+    void saveSettings();
 
-    Config current_;
-    QComboBox* parameter_ = nullptr;
-    QDoubleSpinBox* minimum_ = nullptr;
-    QDoubleSpinBox* maximum_ = nullptr;
-    QDoubleSpinBox* increment_ = nullptr;
+    QPlainTextEdit* startJson_ = nullptr;
+    QPlainTextEdit* endJson_ = nullptr;
+    QDoubleSpinBox* frameRate_ = nullptr;
+    QDoubleSpinBox* duration_ = nullptr;
+    QSpinBox* width_ = nullptr;
+    QSpinBox* height_ = nullptr;
+    QLabel* frameCount_ = nullptr;
+    std::optional<SweepDefinition> definition_;
+    QSettings settings_{"ChaosV", "ChaosV"};
 };

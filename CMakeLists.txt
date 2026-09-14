@@ -30,6 +30,8 @@ add_library(chaos_v_ui STATIC
     src/fractal_shading.h
     src/render_schedule.cpp
     src/render_schedule.h
+    src/sequence_fuser_dialog.cpp
+    src/sequence_fuser_dialog.h
     src/simulation_export_dialog.cpp
     src/simulation_export_dialog.h
     src/sweep_dialog.cpp

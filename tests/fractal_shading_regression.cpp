@@ -44,5 +44,38 @@ int main() {
         std::cerr << "scale did not produce a half-period color shift\n";
         return 1;
     }
+
+    const FractalPaletteSettings linearUltra{true, 0, 20};
+    if (periodColor(1., linearUltra) != QColor(0, 7, 100) ||
+        periodColor(20., linearUltra) != QColor(0, 0, 0) ||
+        periodColor(200., linearUltra) != periodColor(20., linearUltra)) {
+        std::cerr << "Ultra Fractal gradient endpoints or clamping failed\n";
+        return 1;
+    }
+    const FractalPaletteSettings sublinear{true, -1, 20};
+    const FractalPaletteSettings superlinear{true, 1, 20};
+    if (periodColor(10., sublinear) == periodColor(10., linearUltra) ||
+        periodColor(10., superlinear) == periodColor(10., linearUltra) ||
+        periodColor(10., sublinear) == periodColor(10., superlinear)) {
+        std::cerr << "palette mapping curve had no effect\n";
+        return 1;
+    }
+    Result budget; budget.outcome = Outcome::CollisionBudget;
+    Result blocked; blocked.outcome = Outcome::SpawnBlocked;
+    Result capacity; capacity.outcome = Outcome::LiveCapacity;
+    Result unresolved; unresolved.outcome = Outcome::Unresolved;
+    if (colorFor(budget, linearUltra) != QColor(0, 0, 0) ||
+        colorFor(blocked, linearUltra) != colorFor(capacity, linearUltra) ||
+        colorFor(blocked, linearUltra) != colorFor(unresolved, linearUltra) ||
+        colorFor(blocked, linearUltra) == colorFor(budget, linearUltra)) {
+        std::cerr << "alternate error colors are incorrect\n";
+        return 1;
+    }
+    boundary.expansionMargin = 0;
+    if (shadeFractalResult(boundary, true, 1, 5, linearUltra) !=
+        periodColor(result.period + 1., linearUltra)) {
+        std::cerr << "fractional shading did not use alternate palette\n";
+        return 1;
+    }
     return 0;
 }
